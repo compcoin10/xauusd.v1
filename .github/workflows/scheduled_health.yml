@@ -1,0 +1,89 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Scheduled Health Check — XAUUSD Trading Bot
+#
+# Runs every day at 06:00 UTC to verify:
+#   - All imports still work (dependency API changes)
+#   - yfinance can fetch XAUUSD data
+#   - Signal engine produces valid output
+#   - No silent regressions between deploys
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Daily Health Check
+
+on:
+  schedule:
+    - cron: "0 6 * * *"     # 06:00 UTC every day
+  workflow_dispatch:          # Also allow manual trigger from GitHub UI
+
+jobs:
+  health:
+    name: Daily Health Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Health check — data fetch
+        run: |
+          python - << 'PYEOF'
+          import sys, os
+          sys.path.insert(0, os.getcwd())
+
+          print("=== XAUUSD Bot Daily Health Check ===")
+
+          # 1. Data fetch
+          from core.data_fetcher import get_xauusd, get_dxy, get_latest_price
+          df = get_xauusd("H1")
+          assert df is not None and len(df) > 0, "XAUUSD data fetch failed"
+          print(f"✓ XAUUSD H1 data: {len(df)} bars, last close={df['close'].iloc[-1]:.2f}")
+
+          dxy = get_dxy("H1")
+          assert dxy is not None and len(dxy) > 0, "DXY data fetch failed"
+          print(f"✓ DXY H1 data: {len(dxy)} bars")
+
+          price = get_latest_price()
+          assert price > 100, f"Invalid price: {price}"
+          print(f"✓ Latest XAUUSD price: ${price:.2f}")
+
+          # 2. Indicators
+          from core.indicators import enrich_df, market_regime
+          df_e = enrich_df(df)
+          regime = market_regime(df_e)
+          print(f"✓ Market regime: {regime}")
+
+          # 3. Signals
+          from core.signal_engine import generate_signals
+          m15 = get_xauusd("M15")
+          sigs = generate_signals(m15, df, dxy)
+          print(f"✓ Signals generated: {len(sigs)}")
+          for s in sigs:
+              print(f"  → {s['direction']} | {s['strategy']} | conf={s['confidence']}% | RR={s['rr']:.1f}x")
+
+          # 4. Database
+          from core.database import init_db, get_balance
+          init_db()
+          bal = get_balance()
+          print(f"✓ Database OK (balance=${bal:.2f})")
+
+          print("")
+          print("=== All health checks passed ✅ ===")
+          PYEOF
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "::error::Daily health check failed. Check logs above."
+          echo "Possible causes:"
+          echo "  - yfinance API changed"
+          echo "  - Dependency version conflict"
+          echo "  - Logic regression"

@@ -1,0 +1,209 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# CI Pipeline — XAUUSD Trading Bot
+#
+# Triggers on every push / PR to main.
+# Streamlit Cloud picks up the latest main automatically after this passes.
+#
+# Jobs:
+#   1. lint     — flake8 style check (non-blocking warnings)
+#   2. test     — import verification + syntax check + smoke test
+#   3. security — safety check for known vulnerable dependencies
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs for the same branch
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Job 1: Lint ─────────────────────────────────────────────────────────────
+  lint:
+    name: Lint (flake8)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install flake8
+        run: pip install flake8
+
+      - name: Run flake8
+        # E501 = line too long (relaxed for trading formulas)
+        # W503 = line break before binary operator (style preference)
+        # E402 = module level import not at top (needed for Streamlit page config)
+        run: |
+          flake8 app.py core/ utils/ \
+            --max-line-length=120 \
+            --ignore=E501,W503,E402 \
+            --statistics \
+            --count
+        continue-on-error: true   # Lint warnings don't block deploy
+
+  # ── Job 2: Test ─────────────────────────────────────────────────────────────
+  test:
+    name: Tests & Import Check
+    runs-on: ubuntu-latest
+    needs: lint
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify Python syntax — all modules
+        run: |
+          echo "Checking syntax..."
+          python -m py_compile app.py               && echo "  ✓ app.py"
+          python -m py_compile core/__init__.py      && echo "  ✓ core/__init__.py"
+          python -m py_compile core/database.py      && echo "  ✓ core/database.py"
+          python -m py_compile core/data_fetcher.py  && echo "  ✓ core/data_fetcher.py"
+          python -m py_compile core/indicators.py    && echo "  ✓ core/indicators.py"
+          python -m py_compile core/signal_engine.py && echo "  ✓ core/signal_engine.py"
+          python -m py_compile core/risk_manager.py  && echo "  ✓ core/risk_manager.py"
+          python -m py_compile core/backtester.py    && echo "  ✓ core/backtester.py"
+          python -m py_compile core/bot_runner.py    && echo "  ✓ core/bot_runner.py"
+          python -m py_compile utils/__init__.py     && echo "  ✓ utils/__init__.py"
+          python -m py_compile utils/chart_builder.py && echo "  ✓ utils/chart_builder.py"
+
+      - name: Smoke test — core module imports
+        run: |
+          python - << 'PYEOF'
+          import sys, os
+          sys.path.insert(0, os.getcwd())
+
+          print("Testing database...")
+          from core.database import init_db, get_balance, set_balance, get_trades
+          init_db()
+          b = get_balance()
+          assert isinstance(b, float), f"Expected float, got {type(b)}"
+          print(f"  ✓ database  (balance=${b:.2f})")
+
+          print("Testing indicators...")
+          import pandas as pd
+          import numpy as np
+          from core.indicators import enrich_df, market_regime, find_sr_levels
+          n = 250
+          idx = pd.date_range("2024-01-01", periods=n, freq="1h")
+          prices = 2300 + np.cumsum(np.random.normal(0, 5, n))
+          df = pd.DataFrame({
+              "open":   prices * 0.999,
+              "high":   prices * 1.003,
+              "low":    prices * 0.997,
+              "close":  prices,
+              "volume": np.random.uniform(8000, 15000, n),
+          }, index=idx)
+          df_e = enrich_df(df)
+          assert "ema20"  in df_e.columns
+          assert "ema50"  in df_e.columns
+          assert "ema200" in df_e.columns
+          assert "adx"    in df_e.columns
+          assert "rsi"    in df_e.columns
+          r = market_regime(df_e)
+          assert r in ["Bull","Bear","Ranging","High Volatile","Low Liquidity","Unknown"]
+          sr = find_sr_levels(df)
+          assert "support" in sr and "resistance" in sr
+          print(f"  ✓ indicators (regime={r})")
+
+          print("Testing signal engine...")
+          from core.signal_engine import generate_signals
+          sigs = generate_signals(df, df, None)
+          assert isinstance(sigs, list)
+          for s in sigs:
+              assert "direction"  in s
+              assert "entry"      in s
+              assert "sl"         in s
+              assert "tp"         in s
+              assert "confidence" in s
+              assert s["direction"] in ("BUY", "SELL")
+          print(f"  ✓ signal_engine ({len(sigs)} signal(s))")
+
+          print("Testing risk manager...")
+          from core.risk_manager import calculate_lot_size, calculate_pnl, get_performance_summary
+          lot = calculate_lot_size(2350.0, 2330.0, 5000.0)
+          assert 0.01 <= lot <= 1.0, f"Lot size out of range: {lot}"
+          pnl = calculate_pnl("BUY", 2350.0, 2380.0, 0.1)
+          assert isinstance(pnl, float)
+          perf = get_performance_summary()
+          assert "balance" in perf and "win_rate" in perf
+          print(f"  ✓ risk_manager (lot={lot:.2f}, pnl={pnl:.2f})")
+
+          print("Testing backtester...")
+          from core.backtester import backtest_strategy
+          result = backtest_strategy(df, strategy="EMA Momentum", initial_balance=5000.0)
+          assert "win_rate"      in result
+          assert "profit_factor" in result
+          assert "equity_curve"  in result
+          print(f"  ✓ backtester ({result['total_trades']} trades, WR={result['win_rate']:.1f}%)")
+
+          print("Testing chart builder...")
+          from utils.chart_builder import build_main_chart, build_dxy_chart, build_correlation_chart
+          fig = build_main_chart(df)
+          assert fig is not None
+          print("  ✓ chart_builder")
+
+          print("")
+          print("All smoke tests passed ✅")
+          PYEOF
+
+      - name: Verify requirements.txt is parseable
+        run: |
+          python -c "
+          with open('requirements.txt') as f:
+              lines = [l.strip() for l in f if l.strip() and not l.startswith('#')]
+          print('requirements.txt packages:')
+          for l in lines:
+              print(f'  {l}')
+          print(f'Total: {len(lines)} packages')
+          "
+
+  # ── Job 3: Security scan ────────────────────────────────────────────────────
+  security:
+    name: Dependency Security Scan
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Audit dependencies
+        run: |
+          pip install -r requirements.txt
+          pip-audit --requirement requirements.txt --skip-editable || true
+        # continue-on-error so a CVE in a dep doesn't block the deploy
+        # Remove '|| true' if you want strict security gating
+        continue-on-error: true

@@ -1,0 +1,87 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Release Pipeline — XAUUSD Trading Bot
+#
+# Triggers when you push a version tag:  git tag v1.2.3 && git push --tags
+#
+# What it does:
+#   1. Runs the full test suite (reuses ci.yml logic)
+#   2. Zips the project (excluding secrets / cache / db files)
+#   3. Creates a GitHub Release with the zip attached
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write     # needed to create GitHub Releases
+
+jobs:
+  release:
+    name: Build & Publish Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install & verify
+        run: |
+          pip install -r requirements.txt
+          python -m py_compile app.py
+          python -c "from core.database import init_db; init_db(); print('DB OK')"
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Create release zip
+        run: |
+          ZIP_NAME="xauusd_bot_${{ steps.version.outputs.VERSION }}.zip"
+          zip -r "$ZIP_NAME" . \
+            --exclude "*.pyc" \
+            --exclude "*/__pycache__/*" \
+            --exclude "*.db" \
+            --exclude "*.sqlite" \
+            --exclude ".git/*" \
+            --exclude ".streamlit/secrets.toml" \
+            --exclude "venv/*" \
+            --exclude ".venv/*" \
+            --exclude "data/*.db"
+          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+          echo "Created: $ZIP_NAME ($(du -sh $ZIP_NAME | cut -f1))"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "XAUUSD Bot ${{ steps.version.outputs.VERSION }}"
+          body: |
+            ## ⚜️ XAUUSD Trading Bot ${{ steps.version.outputs.VERSION }}
+
+            ### Deploy to Streamlit Cloud
+            1. Go to [share.streamlit.io](https://share.streamlit.io)
+            2. New app → select this repo → branch: `main` → file: `app.py`
+            3. Deploy ✅
+
+            ### What's included
+            - 5 trading strategies: Liq Sweeps · Trend Continuation · Breakout · EMA Momentum · SMC
+            - Market regime classifier (Bull / Bear / Ranging / High Volatile / Low Liquidity)
+            - Walk-forward backtester with equity curve
+            - Persistent balance & trade history (SQLite)
+            - DXY correlation + macro event calendar
+            - Dark gold trading terminal UI
+
+            ### Changelog
+            See [commits](https://github.com/${{ github.repository }}/commits/${{ steps.version.outputs.VERSION }}) for details.
+          files: ${{ env.ZIP_NAME }}
+          draft: false
+          prerelease: false

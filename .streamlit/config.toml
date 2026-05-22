@@ -1,0 +1,43 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Streamlit configuration for XAUUSD Trading Bot
+# Docs: https://docs.streamlit.io/develop/api-reference/configuration/config.toml
+# ─────────────────────────────────────────────────────────────────────────────
+
+[theme]
+# Dark gold trading terminal aesthetic
+base                     = "dark"
+backgroundColor          = "#0d0f14"
+secondaryBackgroundColor = "#13151c"
+textColor                = "#e0e0e0"
+primaryColor             = "#f5c842"
+font                     = "monospace"
+
+[server]
+# Required for Streamlit Cloud deployment
+headless                 = true
+# Port — Streamlit Cloud ignores this; useful for local docker
+port                     = 8501
+# Disable CORS for cloud (handled by Streamlit infra)
+enableCORS               = false
+# Keep XSRF protection on
+enableXsrfProtection     = true
+# Allow all origins on cloud (Streamlit Cloud proxies correctly)
+enableStaticServing      = false
+# Max upload size in MB (for future file-upload features)
+maxUploadSize            = 50
+
+[client]
+showErrorDetails         = false
+toolbarMode              = "minimal"
+# Show "Made with Streamlit" footer — set to false to hide
+showSidebarNavigation    = true
+
+[runner]
+# Faster reruns on state change — important for bot toggle responsiveness
+fastReruns               = true
+# Enforce type checking on widget keys
+enforceSerializableSessionState = false
+
+[browser]
+# Prevents Streamlit from opening a browser tab locally (useful in containers)
+gatherUsageStats         = false
